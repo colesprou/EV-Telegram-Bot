@@ -129,7 +129,7 @@ def generate_simple_bet_recommendations(df, user_sportsbook, user_sharpBook):
                 f'sharpBook Odds': row[sharpBook_column_A],
                 'BetOnline Odds': row[checkBook_column_A],
                 'DraftKings Odds': row[checkBook2_column_A],
-                'BookMaker Odds': row[checkBook3_column_A],
+                #'BookMaker Odds': row[checkBook3_column_A],
                 'Pinnacle Odds': row[checkBook4_column_A],
                 'EV': row['EV_A']
             })
@@ -142,7 +142,7 @@ def generate_simple_bet_recommendations(df, user_sportsbook, user_sharpBook):
                 f'sharpBook Odds': row[sharpBook_column_B],
                 'BetOnline Odds': row[checkBook_column_B],
                 'DraftKings Odds': row[checkBook2_column_B],
-                'BookMaker Odds': row[checkBook3_column_B],
+                #'BookMaker Odds': row[checkBook3_column_B],
                 'Pinnacle Odds': row[checkBook4_column_B],
                 'EV': row['EV_B']
             })
@@ -238,7 +238,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main():
-    application = Application.builder().token("7782271846:AAG2pDKDC5enMY8Vm0lhYklgyk026NjMa3U").build()
+    application = Application.builder().token(os.getenv('telegram_key')).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ev", ev))
     application.run_polling()
