@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime
 from OddsJamClient import OddsJamClient
 import os
+from datetime import datetime, timezone, timedelta
 
 
 api_key = os.getenv('API_KEY')
@@ -64,42 +65,49 @@ def calculate_avg_odds(df):
     return df
 
 def get_todays_game_ids(api_key, league, is_live='false'):
-    """
-    Fetches game IDs for today's games, filtered by the live status if specified.
+    endpoint = "https://api.opticodds.com/api/v3/fixtures"
 
-    Parameters:
-    - api_key (str): Your API key for authentication.
-    - league (str): The league for which to retrieve games (e.g., 'NBA').
-    - is_live (str): 'true' for live games, 'false' for non-live games.
+    # Current date and time
+    today = datetime.now(timezone.utc)
+    future_date = today + timedelta(hours=48)
 
-    Returns:
-    - list: A list of game IDs.
-    """
-    Client = OddsJamClient(api_key)
-    Client.UseV2()
-    GamesResponse = Client.GetGames(league=league)
-    Games = GamesResponse.Games
-    
-    # Print all games for debugging
-    print(Games)
-    
-    # Filter games based on the is_live parameter as a string
-    if is_live == 'true':
-        Games = [game for game in Games if game.is_live]
-    elif is_live == 'false':
-        Games = [game for game in Games if not game.is_live]
-    
-    # Create a list of game IDs and start dates for filtering
-    games_data = [{'game_id': game.id, 'start_date': game.start_date} for game in Games]
-    
-    # Convert to DataFrame to manage dates
-    games_df = pd.DataFrame(games_data)
-    games_df['start_date'] = pd.to_datetime(games_df['start_date'])
-    
-    return games_df['game_id'].tolist()
+    # Parameters
+    params = {
+        "key": api_key,
+        "league": league,
+        "start_date_after": today,
+        "start_date_before": future_date
+    }
+
+    # Make the request
+    response = requests.get(endpoint, params=params)
+
+    # Check response
+    if response.status_code != 200:
+        print(f"Error: {response.status_code}")
+        return None
+
+    api_response = response.json()
+    game_data = {
+        game['id']: f"{game['home_team_display']} vs {game['away_team_display']}"
+        for game in api_response['data']
+    }
+    return game_data
+
 
 # Fetch game data dynamically and filter based on player or game markets
-def fetch_game_data(game_ids, api_key, market_type='game', sport='baseball', league='MLB', sportsbooks=['Pinnacle', 'FanDuel','DraftKings'], include_player_name=True,is_live='false'):
+def fetch_game_data(game_ids, api_key, market_type='game', sport='baseball', league='MLB', sportsbooks=None, include_player_name=True, is_live='false'):
+    # Validate inputs
+    if sportsbooks is None:
+        sportsbooks = ['Pinnacle', 'FanDuel', 'DraftKings']
+
+    # Fetch game names
+    game_data_dict = get_todays_game_ids(api_key, league, is_live=is_live)
+    if not game_data_dict:
+        print("No game data found.")
+        return pd.DataFrame()
+
+    # Fetch markets for the given sport and league
     markets_df = fetch_sports_markets(api_key, sport, league, sportsbooks)
     if market_type == 'player':
         markets = markets_df[markets_df['name'].str.contains('Player', case=False)]['name'].tolist()
@@ -108,54 +116,41 @@ def fetch_game_data(game_ids, api_key, market_type='game', sport='baseball', lea
     else:
         print(f"Unknown market type: {market_type}")
         return pd.DataFrame()
-    url = "https://api-external.oddsjam.com/api/v2/game-odds"
-    all_data = []
-    print(markets)
+
+    url = "https://api.opticodds.com/api/v3/fixtures/odds"
+    all_data = []  # Collect all data across sportsbooks and chunks
+
     for chunk in [game_ids[i:i + 5] for i in range(0, len(game_ids), 5)]:
         for sportsbook in sportsbooks:
-            if is_live == 'false':
-                params = {
-                    'key': api_key,
-                    'sportsbook': sportsbook,
-                    'game_id': chunk,
-                    'market_name': markets
-                }
-            else:
-                params = {
-                    'key': api_key,
-                    'sportsbook': sportsbook,
-                    'game_id': chunk,
-                    'market_name': markets,
-                    'status': 'live'
-                }
+            params = {
+                'key': api_key,
+                'sportsbook': sportsbook,
+                'fixture_id': chunk,
+                'market_name': markets
+            }
+            if is_live != 'false':
+                params['status'] = 'live'
+
             response = requests.get(url, params=params)
             if response.status_code == 200:
                 data = response.json().get('data', [])
-                all_data.extend(data)
+                for game_data in data:
+                    # Add sportsbook info to each record
+                    for item in game_data.get('odds', []):
+                        all_data.append({
+                            'Game ID': game_data.get('id', 'Unknown'),
+                            'Game Name': game_data_dict.get(game_data.get('id', 'Unknown'), 'Unknown Game'),
+                            'Bet Name': item.get('name', None),
+                            'Market Name': item.get('market', ''),
+                            'Sportsbook': sportsbook,
+                            'line': item.get('points', None),
+                            'Odds': item.get('price', None),
+                            **({'Player Name': item.get('selection', 'Unknown')} if include_player_name and market_type == 'player' else {})
+                        })
             else:
-                print(f"Error fetching data: {response.status_code} - {response.text}")
-    
-    rows = []
-    for game_data in all_data:
-        home_team = game_data.get('home_team', 'Unknown')
-        away_team = game_data.get('away_team', 'Unknown')
-        odds_list = game_data.get('odds', [])
-        
-        for item in odds_list:
-            row = {
-                'Game ID': game_data.get('id', 'Unknown'),
-                "Game Name": f"{home_team} vs {away_team}",
-                "Bet Name": item.get('name', None),
-                'Market Name': item.get('market_name', ''),
-                'Sportsbook': item.get('sports_book_name', sportsbook),
-                'line': item.get('bet_points', None),
-                'Odds': item.get('price', None),
-            }
-            if include_player_name and market_type == 'player':
-                row['Player Name'] = item.get('selection', 'Unknown')
-            rows.append(row)
-    
-    return pd.DataFrame(rows)
+                print(f"Error fetching data for sportsbook {sportsbook}: {response.status_code} - {response.text}")
+
+    return pd.DataFrame(all_data)
 def fetch_closing_line_game_data(game_ids, api_key, market_type='game', sport='basketball', league='NBA', 
                                  sportsbooks=['FanDuel', 'BetOnline', 'Caesars'], include_player_name=True, is_live='false'):
     """
@@ -248,8 +243,8 @@ def get_player_ev_bets(api_key, sport, league, sportsbook='Caesars', is_live='fa
     
     # Fetch player props
     player_props_df = fetch_game_data(
-        game_ids, api_key, market_type='player', sport=sport, league=league,
-        sportsbooks=['Pinnacle','BetOnline','DraftKings',"Bookmaker","Caesars", "Circa Vegas",sportsbook], is_live=is_live
+        list(game_ids.keys()), api_key, market_type='player', sport=sport, league=league,
+        sportsbooks=['Pinnacle','BetOnline','DraftKings',"Bookmaker","Caesars", "Circa Vegas",'Betcris',"bet105",sportsbook], is_live=is_live
     )
     player_props_df.to_csv('DEBUG_PLAYER_PROPS.csv', index=False)
 
@@ -266,8 +261,8 @@ def get_game_ev_bets(api_key, sport, league, sportsbook='Caesars',is_live='false
     
     # Fetch game props
     game_props_df = fetch_game_data(
-        game_ids, api_key, market_type='game', sport=sport, league=league,
-        sportsbooks=['Pinnacle','BetOnline','DraftKings',"Bookmaker", "Caesars","Circa Vegas",sportsbook], is_live=is_live
+        list(game_ids.keys()), api_key, market_type='game', sport=sport, league=league,
+        sportsbooks=['Pinnacle','BetOnline','DraftKings',"Bookmaker", "Caesars","Circa Vegas","Betcris","Fanduel",'bet105',sportsbook], is_live=is_live
     )
     game_props_df.to_csv('DEBUG_GAME_PROPS.csv', index=False)
 
